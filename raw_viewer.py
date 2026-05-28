@@ -284,6 +284,9 @@ class GalleryView(ttk.Frame):
 
     def _scroll(self, e):
         self._cv.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        for path, idx in list(self._path_to_idx.items()):
+            if path != self._selected_path:
+                self._cells[idx].config(highlightbackground="#272727")
 
     def _on_cv_resize(self, e):
         self._cv.itemconfig(self._cv_win, width=e.width)
@@ -386,15 +389,22 @@ class GalleryView(ttk.Frame):
         img_lbl.pack(pady=(6, 2), padx=6)
         name_lbl.pack(pady=(0, 6))
 
+        leave_job = [None]
+
         def on_enter(_e, c=cell):
+            if leave_job[0] is not None:
+                c.after_cancel(leave_job[0])
+                leave_job[0] = None
             c.config(highlightbackground="#5a90c8")
 
         def on_leave(_e, c=cell, p=path):
-            rx, ry = c.winfo_rootx(), c.winfo_rooty()
-            if not (rx <= c.winfo_pointerx() <= rx + c.winfo_width()
-                    and ry <= c.winfo_pointery() <= ry + c.winfo_height()):
+            if leave_job[0] is not None:
+                c.after_cancel(leave_job[0])
+            def _reset():
+                leave_job[0] = None
                 color = "#5a90c8" if self._selected_path == p else "#272727"
                 c.config(highlightbackground=color)
+            leave_job[0] = c.after(50, _reset)
 
         for w in (cell, img_lbl, name_lbl):
             w.bind("<Enter>",           on_enter)
