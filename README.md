@@ -84,6 +84,22 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 
 `render_thumbnail` runs the full edit pipeline on a freshly downsampled copy of `raw_linear`, independent of the canvas-sized `preview_linear`.
 
+## Export
+
+File → Export… (`Ctrl+E`) opens a dialog to export the current photo at full resolution.
+
+- **Format:** JPEG or PNG. The quality slider (1–100, default 92) is visible for JPEG and hidden for PNG.
+- **Render path:** `EditorView.render_full()` applies the same edit pipeline as the live preview but operates directly on `raw_linear` without downsampling.
+- The save dialog pre-fills the filename with the raw file's stem and the chosen extension.
+
+## Session persistence
+
+Session state is written to `%APPDATA%\RawViewer\session.json` on every gallery return and on close.
+
+- **Last folder** — reopened automatically on the next launch.
+- **Edit states** — per-photo adjustments keyed by file path, restored into `EditorView._edit_states` before the first photo is opened.
+- **Edited thumbnails** — serialized as base64 PNG and replayed onto gallery cells after the folder finishes loading, via a `_load_done_cb` hook on `GalleryView`.
+
 ## Key bindings
 
 | Key | Action |
@@ -98,7 +114,6 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 ## Known issues / history
 
 - Shadow slider strength reduced from 0.15 → 0.08 (user found original too aggressive).
-- Export is available via File → Export… (`Ctrl+E`). JPEG (with quality slider) and PNG.
 - Opening a file from within the editor via "Open Raw File…" does not update the window title (only gallery → editor navigations do).
 - Tone curve operates in gamma space (after sRGB encoding), not linear light.
 - Gallery thumbnail decode is slower than embedded-JPEG extraction; large folders take longer to populate.
