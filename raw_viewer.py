@@ -1,4 +1,7 @@
+import base64
 import concurrent.futures
+import io
+import json
 import os
 import queue
 import threading
@@ -18,6 +21,27 @@ RAW_EXTS = {".cr2", ".cr3", ".nef", ".nrw", ".arw", ".arq", ".dng", ".rw2",
             ".fff", ".mrw"}
 RAW_GLOB = ("*.CR2 *.CR3 *.NEF *.NRW *.ARW *.ARQ *.DNG *.RW2 *.ORF "
             "*.RAF *.PEF *.SRW *.X3F *.GPR *.IIQ *.3FR *.FFF *.MRW")
+
+_APPDATA     = os.environ.get("APPDATA") or os.path.expanduser("~")
+_SESSION_DIR = os.path.join(_APPDATA, "RawViewer")
+_SESSION_PATH = os.path.join(_SESSION_DIR, "session.json")
+
+
+def _load_session():
+    try:
+        with open(_SESSION_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_session(data):
+    try:
+        os.makedirs(_SESSION_DIR, exist_ok=True)
+        with open(_SESSION_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 
 # ── Tone-curve widget ─────────────────────────────────────────────────────────
@@ -187,7 +211,9 @@ class GalleryView(ttk.Frame):
         self._n_total    = 0
         self._n_loaded   = 0
         self._queue      = queue.Queue()
-        self._resize_job = None
+        self._resize_job     = None
+        self._current_folder = None
+        self._load_done_cb   = None
         self._build_ui()
 
     def _build_ui(self):
@@ -242,6 +268,7 @@ class GalleryView(ttk.Frame):
         except OSError as exc:
             messagebox.showerror("Error", str(exc))
             return
+        self._current_folder = folder
         paths = [os.path.join(folder, f) for f in entries
                  if os.path.splitext(f)[1].lower() in RAW_EXTS]
         if not paths:
@@ -294,6 +321,9 @@ class GalleryView(ttk.Frame):
                 item = self._queue.get_nowait()
                 if item is None:
                     self._set_status(f"{len(self._cells)} photos")
+                    cb, self._load_done_cb = self._load_done_cb, None
+                    if cb:
+                        cb()
                     return
                 path, pil = item
                 self._n_loaded += 1
@@ -700,8 +730,53 @@ class App:
         root.bind("<Control-o>",       lambda _e: self._cmd_open_file())
         root.bind("<Control-O>",       lambda _e: self._cmd_open_folder())
         root.bind("<backslash>",       self._on_backslash)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        session = _load_session()
+        if "edit_states" in session:
+            self._editor._edit_states = {
+                path: {**s, "curve_points": [tuple(p) for p in s["curve_points"]]}
+                for path, s in session["edit_states"].items()
+            }
+
+        self._thumb_cache: dict = {}
+        for path, b64 in session.get("thumbs", {}).items():
+            try:
+                self._thumb_cache[path] = Image.open(io.BytesIO(base64.b64decode(b64)))
+            except Exception:
+                pass
 
         self._show_gallery()
+
+        last = session.get("last_folder")
+        if last and os.path.isdir(last):
+            self._gallery._load_done_cb = self._apply_cached_thumbs
+            root.after(100, lambda: self._gallery._load_folder(last))
+
+    def _apply_cached_thumbs(self):
+        for path, pil in self._thumb_cache.items():
+            self._gallery.update_thumbnail(path, pil)
+
+    def _save_session_now(self):
+        if self._editor._current_path:
+            self._editor._save_state()
+        states = {}
+        for path, s in self._editor._edit_states.items():
+            states[path] = {**s, "curve_points": [list(p) for p in s["curve_points"]]}
+        thumbs = {}
+        for path, pil in self._thumb_cache.items():
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG")
+            thumbs[path] = base64.b64encode(buf.getvalue()).decode()
+        _write_session({
+            "last_folder": self._gallery._current_folder,
+            "edit_states": states,
+            "thumbs":      thumbs,
+        })
+
+    def _on_close(self):
+        self._save_session_now()
+        self.root.destroy()
 
     def _show_gallery(self):
         path = self._editor._current_path
@@ -709,6 +784,8 @@ class App:
             thumb = self._editor.render_thumbnail(THUMB_W, THUMB_H)
             if thumb is not None:
                 self._gallery.update_thumbnail(path, thumb)
+                self._thumb_cache[path] = thumb
+        self._save_session_now()
         self._editor.grid_remove()
         self._gallery.grid()
         self.root.title("Raw Viewer — Gallery")
@@ -721,7 +798,10 @@ class App:
 
     def _cmd_open_folder(self):
         self._show_gallery()
+        self._gallery._load_done_cb = self._apply_cached_thumbs
         self._gallery.open_folder()
+        if self._gallery._current_folder:
+            self._save_session_now()
 
     def _cmd_open_file(self):
         path = filedialog.askopenfilename(
