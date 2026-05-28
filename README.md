@@ -107,5 +107,3 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 - Export to JPEG / TIFF
 - Keyboard navigation in gallery (arrow keys, Enter to open)
 - Zoom / pan in editor canvas
-- Remembering the last-opened folder across sessions
-- Persisting edit states to disk across sessions
