@@ -44,6 +44,74 @@ def _write_session(data):
         pass
 
 
+def _build_pchip_lut(points):
+    xs = np.array([p[0] for p in points])
+    ys = np.array([p[1] for p in points])
+    t  = np.linspace(0.0, 1.0, 256)
+    if len(points) <= 2:
+        return np.clip(np.interp(t, xs, ys), 0.0, 1.0)
+    dx    = np.diff(xs)
+    delta = np.diff(ys) / np.where(dx > 1e-12, dx, 1e-12)
+    n     = len(xs)
+    m     = np.zeros(n)
+    m[0], m[-1] = delta[0], delta[-1]
+    for i in range(1, n - 1):
+        if delta[i-1] * delta[i] <= 0:
+            m[i] = 0.0
+        else:
+            w1, w2 = 2*dx[i] + dx[i-1], dx[i] + 2*dx[i-1]
+            m[i]   = (w1 + w2) / (w1/delta[i-1] + w2/delta[i])
+    for i in range(n - 1):
+        if abs(delta[i]) < 1e-12:
+            m[i] = m[i+1] = 0.0
+        else:
+            a, b = m[i]/delta[i], m[i+1]/delta[i]
+            if a**2 + b**2 > 9:
+                tau = 3.0 / np.sqrt(a**2 + b**2)
+                m[i], m[i+1] = tau*a*delta[i], tau*b*delta[i]
+    j   = np.clip(np.searchsorted(xs, t, side="right") - 1, 0, n-2)
+    h   = dx[j]
+    s   = (t - xs[j]) / np.where(h > 1e-12, h, 1e-12)
+    lut = ((2*s**3 - 3*s**2 + 1) * ys[j]
+           + (s**3 - 2*s**2 + s) * h * m[j]
+           + (-2*s**3 + 3*s**2)  * ys[j+1]
+           + (s**3 - s**2)       * h * m[j+1])
+    return np.clip(lut, 0.0, 1.0)
+
+
+def _render_exported(path, edit_state):
+    with rawpy.imread(path) as raw:
+        rgb16 = raw.postprocess(
+            use_camera_wb=True, no_auto_bright=True,
+            output_color=rawpy.ColorSpace.sRGB,
+            output_bps=16, gamma=(1, 1),
+        )
+    img  = rgb16.astype(np.float32) / 65535.0
+    temp = edit_state.get("temperature", 0.0) / 100.0
+    tint = edit_state.get("tint",        0.0) / 100.0
+    if temp or tint:
+        img[:, :, 0] *= 1.0 + temp * 0.40
+        img[:, :, 2] *= 1.0 - temp * 0.40
+        img[:, :, 1] *= 1.0 + tint * 0.15
+    exp = edit_state.get("exposure", 0.0)
+    if exp:
+        img *= 2.0 ** exp
+    np.clip(img, 0.0, 1.0, out=img)
+    img = np.where(img <= 0.0031308, img * 12.92,
+                   1.055 * np.power(np.maximum(img, 1e-9), 1/2.4) - 0.055)
+    lut = _build_pchip_lut(edit_state.get("curve_points", [(0.0, 0.0), (1.0, 1.0)]))
+    img = np.interp(img.ravel(), np.linspace(0.0, 1.0, 256), lut) \
+            .reshape(img.shape).astype(np.float32)
+    sat = edit_state.get("saturation", 0.0) / 100.0
+    if sat:
+        luma = (0.2126 * img[:, :, 0]
+                + 0.7152 * img[:, :, 1]
+                + 0.0722 * img[:, :, 2])[:, :, np.newaxis]
+        img = luma + (1.0 + sat) * (img - luma)
+    np.clip(img, 0.0, 1.0, out=img)
+    return Image.fromarray((img * 255).astype(np.uint8))
+
+
 # ── Tone-curve widget ─────────────────────────────────────────────────────────
 
 class ToneCurveWidget(ttk.Frame):
@@ -84,42 +152,7 @@ class ToneCurveWidget(ttk.Frame):
         return p + x * (w - 2*p), p + (1.0 - y) * (h - 2*p)
 
     def _build_lut(self):
-        xs = np.array([p[0] for p in self.points])
-        ys = np.array([p[1] for p in self.points])
-        t  = np.linspace(0.0, 1.0, 256)
-
-        if len(self.points) <= 2:
-            self._lut = np.clip(np.interp(t, xs, ys), 0.0, 1.0)
-            return
-
-        dx    = np.diff(xs)
-        delta = np.diff(ys) / np.where(dx > 1e-12, dx, 1e-12)
-        n     = len(xs)
-        m     = np.zeros(n)
-        m[0], m[-1] = delta[0], delta[-1]
-        for i in range(1, n - 1):
-            if delta[i-1] * delta[i] <= 0:
-                m[i] = 0.0
-            else:
-                w1, w2 = 2*dx[i] + dx[i-1], dx[i] + 2*dx[i-1]
-                m[i]   = (w1 + w2) / (w1/delta[i-1] + w2/delta[i])
-        for i in range(n - 1):
-            if abs(delta[i]) < 1e-12:
-                m[i] = m[i+1] = 0.0
-            else:
-                a, b = m[i]/delta[i], m[i+1]/delta[i]
-                if a**2 + b**2 > 9:
-                    tau = 3.0 / np.sqrt(a**2 + b**2)
-                    m[i], m[i+1] = tau*a*delta[i], tau*b*delta[i]
-
-        j   = np.clip(np.searchsorted(xs, t, side="right") - 1, 0, n-2)
-        h   = dx[j]
-        s   = (t - xs[j]) / np.where(h > 1e-12, h, 1e-12)
-        lut = ((2*s**3 - 3*s**2 + 1) * ys[j]
-               + (s**3 - 2*s**2 + s) * h * m[j]
-               + (-2*s**3 + 3*s**2)  * ys[j+1]
-               + (s**3 - s**2)       * h * m[j+1])
-        self._lut = np.clip(lut, 0.0, 1.0)
+        self._lut = _build_pchip_lut(self.points)
 
     def _draw(self):
         self._build_lut()
@@ -214,6 +247,7 @@ class GalleryView(ttk.Frame):
         self._resize_job     = None
         self._current_folder = None
         self._load_done_cb   = None
+        self._selected_path  = None
         self._build_ui()
 
     def _build_ui(self):
@@ -355,15 +389,17 @@ class GalleryView(ttk.Frame):
         def on_enter(_e, c=cell):
             c.config(highlightbackground="#5a90c8")
 
-        def on_leave(_e, c=cell):
+        def on_leave(_e, c=cell, p=path):
             rx, ry = c.winfo_rootx(), c.winfo_rooty()
             if not (rx <= c.winfo_pointerx() <= rx + c.winfo_width()
                     and ry <= c.winfo_pointery() <= ry + c.winfo_height()):
-                c.config(highlightbackground="#272727")
+                color = "#5a90c8" if self._selected_path == p else "#272727"
+                c.config(highlightbackground=color)
 
         for w in (cell, img_lbl, name_lbl):
             w.bind("<Enter>",           on_enter)
             w.bind("<Leave>",           on_leave)
+            w.bind("<Button-1>",        lambda _e, c=cell, p=path: self._select(p, c))
             w.bind("<Double-Button-1>", lambda _e, p=path: self._open_cb(p))
             w.bind("<MouseWheel>",      self._scroll)
 
@@ -374,6 +410,14 @@ class GalleryView(ttk.Frame):
         self._path_to_idx[path] = len(self._cells)
         self._cells.append(cell)
         self._img_lbls.append(img_lbl)
+
+    def _select(self, path, cell):
+        if self._selected_path is not None:
+            old_idx = self._path_to_idx.get(self._selected_path)
+            if old_idx is not None:
+                self._cells[old_idx].config(highlightbackground="#272727")
+        self._selected_path = path
+        cell.config(highlightbackground="#5a90c8")
 
     def update_thumbnail(self, path, pil):
         idx = self._path_to_idx.get(path)
@@ -400,7 +444,8 @@ class GalleryView(ttk.Frame):
         self._photos.clear()
         self._img_lbls.clear()
         self._path_to_idx.clear()
-        self._ncols = 0
+        self._ncols         = 0
+        self._selected_path = None
         self._hint.grid(row=0, column=0, padx=60, pady=120)
 
 
@@ -844,9 +889,17 @@ class App:
             self._open_in_editor(path)
 
     def _cmd_export(self):
-        if self._editor.raw_linear is None:
-            messagebox.showinfo("Export", "Open a raw file first.")
-            return
+        gallery_mode = self._gallery.winfo_ismapped()
+        if gallery_mode:
+            export_path = self._gallery._selected_path
+            if export_path is None:
+                messagebox.showinfo("Export", "Select a photo first.")
+                return
+        else:
+            if self._editor.raw_linear is None:
+                messagebox.showinfo("Export", "Open a raw file first.")
+                return
+            export_path = self._editor._current_path
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Export")
@@ -891,10 +944,10 @@ class App:
         ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT)
 
         def do_export():
-            fmt = fmt_var.get()
-            ext = ".jpg" if fmt == "JPEG" else ".png"
-            stem = os.path.splitext(os.path.basename(self._editor._current_path))[0]
-            out = filedialog.asksaveasfilename(
+            fmt  = fmt_var.get()
+            ext  = ".jpg" if fmt == "JPEG" else ".png"
+            stem = os.path.splitext(os.path.basename(export_path))[0]
+            out  = filedialog.asksaveasfilename(
                 parent=dlg,
                 title="Export",
                 defaultextension=ext,
@@ -906,8 +959,12 @@ class App:
             dlg.destroy()
             self._status.set("Exporting…")
             self.root.update_idletasks()
-            pil = self._editor.render_full()
-            kw  = {"quality": quality_var.get(), "optimize": True} if fmt == "JPEG" else {}
+            if gallery_mode:
+                state = self._editor._edit_states.get(export_path, {})
+                pil   = _render_exported(export_path, state)
+            else:
+                pil   = self._editor.render_full()
+            kw = {"quality": quality_var.get(), "optimize": True} if fmt == "JPEG" else {}
             pil.save(out, format=fmt, **kw)
             self._status.set(f"Exported → {os.path.basename(out)}")
 
