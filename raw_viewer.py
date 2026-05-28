@@ -177,9 +177,10 @@ class ToneCurveWidget(ttk.Frame):
     _R   = 5
     _HIT = 9
 
-    def __init__(self, parent, on_change, **kwargs):
+    def __init__(self, parent, on_change, on_commit=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.on_change = on_change
+        self.on_commit = on_commit or (lambda: None)
         self.points = [(0.0, 0.0), (1.0, 1.0)]
         self._drag = None
         self._lut  = np.linspace(0.0, 1.0, 256)
@@ -274,6 +275,7 @@ class ToneCurveWidget(ttk.Frame):
 
     def _release(self, _e):
         self._drag = None
+        self.on_commit()
 
     def _right_click(self, e):
         idx = self._hit(e.x, e.y)
@@ -281,6 +283,7 @@ class ToneCurveWidget(ttk.Frame):
             self.points.pop(idx)
             self._drag = None
             self._update()
+            self.on_commit()
 
     def _update(self):
         self._draw()
@@ -534,6 +537,10 @@ class EditorView(ttk.Frame):
         self._disp_vars      = {}
         self._current_path   = None
         self._edit_states    = {}
+        self._history        = []
+        self._history_idx    = -1
+        self._undo_btn       = None
+        self._redo_btn       = None
 
         self.adjustments = {
             "exposure":    tk.DoubleVar(value=0.0),
@@ -576,7 +583,8 @@ class EditorView(ttk.Frame):
 
         ttk.Separator(ctrl, orient="horizontal").pack(fill=tk.X, pady=(10, 6))
         ttk.Label(ctrl, text="Tone Curve", anchor="w").pack(fill=tk.X)
-        self.curve = ToneCurveWidget(ctrl, on_change=self._schedule_update)
+        self.curve = ToneCurveWidget(ctrl, on_change=self._schedule_update,
+                                     on_commit=self._push_history)
         self.curve.pack(fill=tk.X, pady=(4, 2))
         ttk.Label(ctrl, text="click add  •  right-click remove",
                   foreground="#666", font=("", 8), anchor="center").pack(fill=tk.X)
@@ -587,6 +595,15 @@ class EditorView(ttk.Frame):
         self._ba_btn.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(ctrl, text="Reset All",
                    command=self.reset_adjustments).pack(fill=tk.X)
+
+        ur = ttk.Frame(ctrl)
+        ur.pack(fill=tk.X, pady=(4, 0))
+        self._undo_btn = ttk.Button(ur, text="Undo", command=self.undo,
+                                    state="disabled")
+        self._undo_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        self._redo_btn = ttk.Button(ur, text="Redo", command=self.redo,
+                                    state="disabled")
+        self._redo_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
     def _add_slider(self, parent, label, key, lo, hi, fmt):
         frame = ttk.Frame(parent)
@@ -603,6 +620,7 @@ class EditorView(ttk.Frame):
         slider.pack(fill=tk.X)
         slider.configure(command=lambda v, _d=disp, _f=fmt: (
             _d.set(_f % float(v)), self._schedule_update()))
+        slider.bind("<ButtonRelease-1>", lambda _e: self._push_history())
 
     def _open_file(self):
         path = filedialog.askopenfilename(
@@ -631,6 +649,9 @@ class EditorView(ttk.Frame):
                 self._placeholder = None
             self._current_path = path
             self._restore_state(path)
+            self._history     = [self._snapshot()]
+            self._history_idx = 0
+            self._update_history_buttons()
             if self._show_before:
                 self._show_before = False
                 self._ba_btn.config(text="Before  [\\]")
@@ -819,6 +840,58 @@ class EditorView(ttk.Frame):
             self.after_cancel(self._resize_job)
         self._resize_job = self.after(150, self._rebuild_preview)
 
+    def _snapshot(self):
+        return {
+            "exposure":     self.adjustments["exposure"].get(),
+            "temperature":  self.adjustments["temperature"].get(),
+            "tint":         self.adjustments["tint"].get(),
+            "saturation":   self.adjustments["saturation"].get(),
+            "curve_points": list(self.curve.points),
+        }
+
+    def _push_history(self):
+        if self.raw_linear is None:
+            return
+        snap = self._snapshot()
+        if self._history and snap == self._history[self._history_idx]:
+            return
+        self._history = self._history[:self._history_idx + 1]
+        self._history.append(snap)
+        if len(self._history) > 50:
+            self._history = self._history[-50:]
+        self._history_idx = len(self._history) - 1
+        self._update_history_buttons()
+
+    def _update_history_buttons(self):
+        if self._undo_btn is None:
+            return
+        self._undo_btn.config(state="normal" if self._history_idx > 0 else "disabled")
+        self._redo_btn.config(
+            state="normal" if self._history_idx < len(self._history) - 1 else "disabled")
+
+    def _apply_state(self, state):
+        for key in ("exposure", "temperature", "tint", "saturation"):
+            val = state[key]
+            self.adjustments[key].set(val)
+            disp, fmt = self._disp_vars[key]
+            disp.set(fmt % val)
+        self.curve.points = list(state["curve_points"])
+        self.curve._build_lut()
+        self.curve._draw()
+        self._apply_and_display()
+
+    def undo(self):
+        if self._history_idx > 0:
+            self._history_idx -= 1
+            self._apply_state(self._history[self._history_idx])
+            self._update_history_buttons()
+
+    def redo(self):
+        if self._history_idx < len(self._history) - 1:
+            self._history_idx += 1
+            self._apply_state(self._history[self._history_idx])
+            self._update_history_buttons()
+
     def reset_adjustments(self):
         for key, var in self.adjustments.items():
             var.set(0.0)
@@ -829,6 +902,7 @@ class EditorView(ttk.Frame):
             self._show_before = False
             self._ba_btn.config(text="Before  [\\]")
         self._apply_and_display()
+        self._push_history()
 
 
 # ── App coordinator ───────────────────────────────────────────────────────────
@@ -875,6 +949,10 @@ class App:
         root.bind("<Control-o>",       lambda _e: self._cmd_open_file())
         root.bind("<Control-O>",       lambda _e: self._cmd_open_folder())
         root.bind("<Control-e>",       lambda _e: self._cmd_export())
+        root.bind("<Control-z>",       lambda _e: self._cmd_undo())
+        root.bind("<Control-Z>",       lambda _e: self._cmd_undo())
+        root.bind("<Control-y>",       lambda _e: self._cmd_redo())
+        root.bind("<Control-Y>",       lambda _e: self._cmd_redo())
         root.bind("<backslash>",       self._on_backslash)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1039,6 +1117,14 @@ class App:
             self._status.set(f"Exported → {os.path.basename(out)}")
 
         ttk.Button(btn_row, text="Export", command=do_export).pack(side=tk.RIGHT)
+
+    def _cmd_undo(self):
+        if self._editor.winfo_ismapped():
+            self._editor.undo()
+
+    def _cmd_redo(self):
+        if self._editor.winfo_ismapped():
+            self._editor.redo()
 
     def _on_backslash(self, _e):
         if self._editor.winfo_ismapped():
