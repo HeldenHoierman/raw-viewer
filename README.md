@@ -90,6 +90,7 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 |-----|--------|
 | `Ctrl+O` | Open single raw file → editor |
 | `Ctrl+Shift+O` | Open folder → gallery |
+| `Ctrl+E` | Export current photo |
 | `\` | Toggle before/after (editor only) |
 
 `\` is bound at the root level in `App._on_backslash` and only fires `toggle_before_after()` when the editor is mapped.
@@ -97,13 +98,12 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 ## Known issues / history
 
 - Shadow slider strength reduced from 0.15 → 0.08 (user found original too aggressive).
-- There is no export. Editing is preview-only.
+- Export is available via File → Export… (`Ctrl+E`). JPEG (with quality slider) and PNG.
 - Opening a file from within the editor via "Open Raw File…" does not update the window title (only gallery → editor navigations do).
 - Tone curve operates in gamma space (after sRGB encoding), not linear light.
 - Gallery thumbnail decode is slower than embedded-JPEG extraction; large folders take longer to populate.
 
 ## What's not built yet
 
-- Export to JPEG / TIFF
 - Keyboard navigation in gallery (arrow keys, Enter to open)
 - Zoom / pan in editor canvas

@@ -590,6 +590,34 @@ class EditorView(ttk.Frame):
         np.clip(img, 0.0, 1.0, out=img)
         return Image.fromarray((img * 255).astype(np.uint8))
 
+    def render_full(self):
+        if self.raw_linear is None:
+            return None
+        img  = self.raw_linear.copy()
+        temp = self.adjustments["temperature"].get() / 100.0
+        tint = self.adjustments["tint"].get() / 100.0
+        if temp or tint:
+            img[:, :, 0] *= 1.0 + temp * 0.40
+            img[:, :, 2] *= 1.0 - temp * 0.40
+            img[:, :, 1] *= 1.0 + tint * 0.15
+        exp = self.adjustments["exposure"].get()
+        if exp:
+            img *= 2.0 ** exp
+        np.clip(img, 0.0, 1.0, out=img)
+        img = np.where(img <= 0.0031308, img * 12.92,
+                       1.055 * np.power(np.maximum(img, 1e-9), 1/2.4) - 0.055)
+        lut = self.curve.get_lut()
+        img = np.interp(img.ravel(), np.linspace(0.0, 1.0, 256), lut) \
+                .reshape(img.shape).astype(np.float32)
+        sat = self.adjustments["saturation"].get() / 100.0
+        if sat:
+            luma = (0.2126 * img[:, :, 0]
+                    + 0.7152 * img[:, :, 1]
+                    + 0.0722 * img[:, :, 2])[:, :, np.newaxis]
+            img = luma + (1.0 + sat) * (img - luma)
+        np.clip(img, 0.0, 1.0, out=img)
+        return Image.fromarray((img * 255).astype(np.uint8))
+
     def _rebuild_preview(self):
         if self.raw_linear is None:
             return
@@ -706,6 +734,9 @@ class App:
         file_menu.add_command(label="Open File…",   command=self._cmd_open_file,
                               accelerator="Ctrl+O")
         file_menu.add_separator()
+        file_menu.add_command(label="Export…",      command=self._cmd_export,
+                              accelerator="Ctrl+E")
+        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=root.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
         root.config(menu=menubar)
@@ -729,6 +760,7 @@ class App:
 
         root.bind("<Control-o>",       lambda _e: self._cmd_open_file())
         root.bind("<Control-O>",       lambda _e: self._cmd_open_folder())
+        root.bind("<Control-e>",       lambda _e: self._cmd_export())
         root.bind("<backslash>",       self._on_backslash)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -810,6 +842,76 @@ class App:
         )
         if path:
             self._open_in_editor(path)
+
+    def _cmd_export(self):
+        if self._editor.raw_linear is None:
+            messagebox.showinfo("Export", "Open a raw file first.")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Export")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self.root)
+
+        outer = ttk.Frame(dlg, padding=16)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        # Format
+        fmt_var = tk.StringVar(value="JPEG")
+        fmt_row = ttk.Frame(outer)
+        fmt_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(fmt_row, text="Format", width=10, anchor="w").pack(side=tk.LEFT)
+        ttk.Radiobutton(fmt_row, text="JPEG", variable=fmt_var,
+                        value="JPEG", command=lambda: _on_fmt()).pack(side=tk.LEFT)
+        ttk.Radiobutton(fmt_row, text="PNG",  variable=fmt_var,
+                        value="PNG",  command=lambda: _on_fmt()).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Quality
+        quality_var = tk.IntVar(value=92)
+        q_row = ttk.Frame(outer)
+        q_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(q_row, text="Quality", width=10, anchor="w").pack(side=tk.LEFT)
+        q_disp = ttk.Label(q_row, text="92", width=4, anchor="e")
+        q_disp.pack(side=tk.RIGHT)
+        ttk.Scale(q_row, variable=quality_var, from_=1, to=100, orient=tk.HORIZONTAL,
+                  command=lambda v: q_disp.config(text=str(int(float(v))))).pack(
+                      side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        def _on_fmt():
+            if fmt_var.get() == "PNG":
+                q_row.pack_forget()
+            else:
+                q_row.pack(fill=tk.X, pady=(0, 10), before=btn_row)
+
+        ttk.Separator(outer, orient="horizontal").pack(fill=tk.X, pady=(0, 10))
+
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill=tk.X)
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT)
+
+        def do_export():
+            fmt = fmt_var.get()
+            ext = ".jpg" if fmt == "JPEG" else ".png"
+            stem = os.path.splitext(os.path.basename(self._editor._current_path))[0]
+            out = filedialog.asksaveasfilename(
+                parent=dlg,
+                title="Export",
+                defaultextension=ext,
+                initialfile=stem + ext,
+                filetypes=[("JPEG", "*.jpg *.jpeg"), ("PNG", "*.png")],
+            )
+            if not out:
+                return
+            dlg.destroy()
+            self._status.set("Exporting…")
+            self.root.update_idletasks()
+            pil = self._editor.render_full()
+            kw  = {"quality": quality_var.get(), "optimize": True} if fmt == "JPEG" else {}
+            pil.save(out, format=fmt, **kw)
+            self._status.set(f"Exported → {os.path.basename(out)}")
+
+        ttk.Button(btn_row, text="Export", command=do_export).pack(side=tk.RIGHT)
 
     def _on_backslash(self, _e):
         if self._editor.winfo_ismapped():
