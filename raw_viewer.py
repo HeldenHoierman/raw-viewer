@@ -112,6 +112,64 @@ def _render_exported(path, edit_state):
     return Image.fromarray((img * 255).astype(np.uint8))
 
 
+_BG      = "#1e1e1e"
+_SURFACE = "#2a2a2a"
+_FG      = "#cccccc"
+_BTN     = "#333333"
+_BTN_ACT = "#444444"
+_BORDER  = "#3a3a3a"
+
+
+def _setup_dark_theme(root):
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".",
+        background=_BG, foreground=_FG,
+        troughcolor=_SURFACE, bordercolor=_BORDER,
+        darkcolor=_BORDER, lightcolor=_BORDER,
+        selectbackground="#5a90c8", selectforeground="#ffffff",
+        fieldbackground=_SURFACE,
+    )
+    style.configure("TFrame",  background=_BG)
+    style.configure("TLabel",  background=_BG, foreground=_FG)
+    style.configure("TButton",
+        background=_BTN, foreground=_FG,
+        bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+        padding=(6, 4),
+    )
+    style.map("TButton",
+        background=[("active", _BTN_ACT), ("pressed", "#5a90c8")],
+        foreground=[("active", "#ffffff")],
+        bordercolor=[("active", _BORDER)],
+    )
+    style.configure("TScale",
+        background=_BG, troughcolor=_SURFACE,
+        bordercolor=_BORDER, sliderlength=14,
+    )
+    style.map("TScale",
+        background=[("active", _BTN_ACT)],
+        troughcolor=[("active", _SURFACE)],
+    )
+    style.configure("TSeparator", background=_BORDER)
+    style.configure("Vertical.TScrollbar",
+        background=_BTN, troughcolor=_SURFACE,
+        bordercolor=_BORDER, arrowcolor=_FG,
+        darkcolor=_BORDER, lightcolor=_BORDER,
+    )
+    style.map("Vertical.TScrollbar",
+        background=[("active", _BTN_ACT)],
+    )
+    style.configure("TRadiobutton",
+        background=_BG, foreground=_FG,
+        indicatorcolor=_SURFACE, focuscolor=_BG,
+    )
+    style.map("TRadiobutton",
+        background=[("active", _BG)],
+        indicatorcolor=[("selected", "#5a90c8"), ("pressed", "#5a90c8")],
+    )
+    root.configure(bg=_BG)
+
+
 # ── Tone-curve widget ─────────────────────────────────────────────────────────
 
 class ToneCurveWidget(ttk.Frame):
@@ -781,6 +839,7 @@ class App:
         root.title("Raw Viewer")
         root.geometry("1280x800")
         root.minsize(800, 550)
+        _setup_dark_theme(root)
 
         menubar   = tk.Menu(root)
         file_menu = tk.Menu(menubar, tearoff=False)
@@ -916,6 +975,7 @@ class App:
         dlg.resizable(False, False)
         dlg.grab_set()
         dlg.transient(self.root)
+        dlg.configure(bg=_BG)
 
         outer = ttk.Frame(dlg, padding=16)
         outer.pack(fill=tk.BOTH, expand=True)
