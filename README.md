@@ -54,7 +54,7 @@ The "before" toggle skips steps 1–6 and just applies gamma to `preview_linear`
 
 ## Tone curve (ToneCurveWidget)
 
-Control points stored as sorted `(x, y)` tuples in [0,1]×[0,1]. Interpolated with a **PCHIP monotone cubic spline** (Fritsch-Carlson) implemented in `_build_lut`, producing a 256-entry float32 LUT. With ≤2 points, falls back to `np.interp` (linear).
+Control points stored as sorted `(x, y)` tuples in [0,1]×[0,1]. Interpolated with a **PCHIP monotone cubic spline** (Fritsch-Carlson) implemented in the module-level `_build_pchip_lut()` function, producing a 256-entry float32 LUT. `ToneCurveWidget._build_lut` delegates to it; the same function is used by `_render_exported()` for gallery exports. With ≤2 points, falls back to `np.interp` (linear).
 
 - Left-click empty area → add point (x clamped to [0.01, 0.99])
 - Drag → move point (endpoints locked to x=0 and x=1)
@@ -74,6 +74,8 @@ Results are emitted in filename-sorted order: as futures complete out of order, 
 
 Hover highlight uses `highlightbackground` on the cell Frame. The leave handler checks pointer coordinates against the cell bounds to avoid flicker when the mouse crosses into child widgets.
 
+**Selection:** single-click calls `GalleryView._select(path, cell)`, which stores the path in `_selected_path` and sets the cell's `highlightbackground` to `#5a90c8` (persistent). The leave handler restores to `#272727` only if the cell is not the selected one. `_clear()` resets `_selected_path` when a new folder is loaded.
+
 ## Per-photo edit state
 
 Each photo's adjustments (exposure, temperature, tint, saturation, curve control points) are stored in `EditorView._edit_states`, a dict keyed by file path.
@@ -86,10 +88,11 @@ Each photo's adjustments (exposure, temperature, tint, saturation, curve control
 
 ## Export
 
-File → Export… (`Ctrl+E`) opens a dialog to export the current photo at full resolution.
+File → Export… (`Ctrl+E`) opens a dialog to export at full resolution. Works from both views.
 
 - **Format:** JPEG or PNG. The quality slider (1–100, default 92) is visible for JPEG and hidden for PNG.
-- **Render path:** `EditorView.render_full()` applies the same edit pipeline as the live preview but operates directly on `raw_linear` without downsampling.
+- **From the editor:** `EditorView.render_full()` applies the edit pipeline directly to the in-memory `raw_linear` without downsampling.
+- **From the gallery:** requires a selected photo. `_render_exported(path, edit_state)` decodes the raw file fresh and applies the stored edit state dict (all adjustments default to zero / linear curve if the photo has never been edited).
 - The save dialog pre-fills the filename with the raw file's stem and the chosen extension.
 
 ## Session persistence
@@ -106,7 +109,7 @@ Session state is written to `%APPDATA%\RawViewer\session.json` on every gallery 
 |-----|--------|
 | `Ctrl+O` | Open single raw file → editor |
 | `Ctrl+Shift+O` | Open folder → gallery |
-| `Ctrl+E` | Export current photo |
+| `Ctrl+E` | Export — selected photo (gallery) or current photo (editor) |
 | `\` | Toggle before/after (editor only) |
 
 `\` is bound at the root level in `App._on_backslash` and only fires `toggle_before_after()` when the editor is mapped.
